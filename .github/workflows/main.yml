@@ -100,5 +100,5 @@ jobs:
         with:
           context: ./sentinel-dashboard
           push: true
-          tags: registry.cn-shanghai.aliyuncs.com/eastcoal-library/rocketmq-dashboard:${{ steps.extract_version.outputs.VERSION }},registry.cn-shanghai.aliyuncs.com/eastcoal-library/rocketmq-dashboard:latest
+          tags: registry.cn-shanghai.aliyuncs.com/eastcoal-library/sentinel-dashboard:${{ steps.extract_version.outputs.VERSION }},registry.cn-shanghai.aliyuncs.com/eastcoal-library/sentinel-dashboard:latest
           build-args: SENTINEL_VERSION=${{ steps.extract_version.outputs.VERSION }}
