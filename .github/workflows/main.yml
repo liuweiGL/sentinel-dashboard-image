@@ -1,0 +1,128 @@
+name: Sentinel Dashboard → Aliyun Container Registry
+
+# 触发方式：1. 每天凌晨定时执行 2. 手动触发
+on:
+  schedule:
+    - cron: '0 6 * * *' 
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      ########################################################################
+      # 步骤1：获取 alibaba/Sentinel 最新 Release 中的 sentinel-dashboard JAR 包
+      ########################################################################
+      - name: Get latest Sentinel Release assets
+        id: get_latest_release
+        run: |
+          # 1. 调用GitHub API获取alibaba/Sentinel最新Release信息
+          LATEST_RELEASE=$(curl -s "https://api.github.com/repos/alibaba/Sentinel/releases/latest")
+          
+          # 2. 过滤出 "sentinel-dashboard-${版本}.jar" 格式的JAR包下载链接
+          # 正则匹配：确保文件名包含"sentinel-dashboard-"且以".jar"结尾，如"sentinel-dashboard-1.8.8.jar"
+          DASHBOARD_JAR_URL=$(echo "$LATEST_RELEASE" | jq -r '
+            .assets[] | 
+            select(.name | test("^sentinel-dashboard-\\d+\\.\\d+\\.\\d+\\.jar$")) | 
+            .browser_download_url
+          ')
+          
+          # 3. 检查是否找到目标JAR包，未找到则终止流程
+          if [ -z "$DASHBOARD_JAR_URL" ] || [ "$DASHBOARD_JAR_URL" = "null" ]; then
+            echo "Error: 未找到 sentinel-dashboard-${版本}.jar 格式的JAR包"
+            exit 1
+          fi
+          
+          # 4. 输出JAR包URL和文件名（用于后续步骤）
+          DASHBOARD_JAR_NAME=$(basename "$DASHBOARD_JAR_URL")
+          echo "DASHBOARD_JAR_URL=$DASHBOARD_JAR_URL" >> $GITHUB_OUTPUT
+          echo "DASHBOARD_JAR_NAME=$DASHBOARD_JAR_NAME" >> $GITHUB_OUTPUT
+          echo "找到目标JAR包：$DASHBOARD_JAR_NAME，下载地址：$DASHBOARD_JAR_URL"
+
+      ########################################################################
+      # 步骤2：解析JAR包版本号（从文件名提取）
+      ########################################################################
+      - name: Extract version from JAR filename
+        id: extract_version
+        run: |
+          # 文件名格式：sentinel-dashboard-1.8.8.jar → 提取 "1.8.8"
+          # 正则替换：去除前缀"sentinel-dashboard-"和后缀".jar"
+          VERSION=$(echo "${{ steps.get_latest_release.outputs.DASHBOARD_JAR_NAME }}" | sed -E 's/^sentinel-dashboard-([0-9]+\.[0-9]+\.[0-9]+)\.jar$/\1/')
+          
+          # 验证版本号格式（如1.8.8），不匹配则终止
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Error: 解析的版本号格式异常，版本号：$VERSION"
+            exit 1
+          fi
+          
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "从JAR包解析出版本号：$VERSION"
+
+      ########################################################################
+      # 步骤3：下载JAR包到本地
+      ########################################################################
+      - name: Download sentinel-dashboard JAR
+        run: |
+          # 创建临时目录存放JAR包（避免与其他文件混淆）
+          mkdir -p ./sentinel-dashboard
+          # 下载JAR包到指定目录
+          curl -L "${{ steps.get_latest_release.outputs.DASHBOARD_JAR_URL }}" -o ./sentinel-dashboard/sentinel-dashboard.jar
+          # 验证下载是否成功（文件大小>0）
+          if [ ! -s ./sentinel-dashboard/sentinel-dashboard.jar ]; then
+            echo "Error: JAR包下载失败或文件为空"
+            exit 1
+          fi
+          echo "JAR包下载完成，路径：./sentinel-dashboard/sentinel-dashboard.jar"
+
+      ########################################################################
+      # 步骤4：创建Dockerfile（动态生成，无需本地提前创建）
+      ########################################################################
+      - name: Create Dockerfile
+        run: |
+          # 在JAR包目录生成Dockerfile（基于OpenJDK 17，适配Sentinel 1.8+版本）
+          cat > ./sentinel-dashboard/Dockerfile << 'EOF'
+          FROM openjdk:17-jdk-slim
+          # 设置工作目录
+          WORKDIR /app
+          # 复制JAR包到容器
+          COPY sentinel-dashboard.jar /app/sentinel-dashboard.jar
+          # 暴露Sentinel Dashboard默认端口（8080）
+          EXPOSE 8080
+          # 启动命令（支持自定义JVM参数，如内存配置）
+          ENTRYPOINT ["java", "-jar", "/app/sentinel-dashboard.jar"]
+          EOF
+          echo "Dockerfile创建完成，内容如下："
+          cat ./sentinel-dashboard/Dockerfile
+
+      ########################################################################
+      # 步骤5：登录阿里云容器Registry
+      ########################################################################
+      - name: Login to Aliyun Container Registry
+        uses: docker/login-action@v3
+        with:
+          # 阿里云容器仓库地址（上海地域）
+          registry: registry.cn-shanghai.aliyuncs.com
+          # 阿里云账号（需提前在GitHub Secrets配置）
+          username: ${{ secrets.ALIYUN_CR_USERNAME }}
+          # 阿里云容器仓库密码（推荐使用"访问令牌"，在阿里云控制台生成）
+          password: ${{ secrets.ALIYUN_CR_PASSWORD }}
+
+      ########################################################################
+      # 步骤6：构建并推送Docker镜像到阿里云仓库
+      ########################################################################
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          # Docker构建上下文（包含JAR包和Dockerfile的目录）
+          context: ./sentinel-dashboard
+          # 启用镜像推送
+          push: true
+          # 镜像标签：
+          # 1. 版本标签（如1.8.8）
+          # 2. latest标签（指向最新版本）
+          tags: |
+            registry.cn-shanghai.aliyuncs.com/eastcoal-library/rocketmq-dashboard:${{ steps.extract_version.outputs.VERSION }}
+            registry.cn-shanghai.aliyuncs.com/eastcoal-library/rocketmq-dashboard:latest
+          # 构建参数（可选，如需传递版本号到容器内部）
+          build-args:
+            - SENTINEL_VERSION=${{ steps.extract_version.outputs.VERSION }}
