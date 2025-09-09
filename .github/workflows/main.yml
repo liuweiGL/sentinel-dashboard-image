@@ -79,7 +79,7 @@ jobs:
           COPY sentinel-dashboard.jar /app/sentinel-dashboard.jar
           EXPOSE 8080
           # 启动命令中显示版本信息，方便日志排查
-          ENTRYPOINT ["sh", "-c", "echo 'Starting Sentinel Dashboard ${SENTINEL_VERSION}' && java \$JVM_OPTS -jar /app/sentinel-dashboard.jar  \$0 \$@"]
+          ENTRYPOINT ["sh", "-c", "java -Dserver.port=8080 \$JVM_OPTS -jar /app/sentinel-dashboard.jar  \$0 \$@"]
           EOF
 
       ########################################################################
